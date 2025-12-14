@@ -1,5 +1,5 @@
 #
-# CatIVity - CI-V (CAT protocol) based VFO tuner for the Xiegu G90 transceiver
+# CatIVity - CAT protocol (Icom CI-V) based VFO tuner
 #
 # Makefile: MAKE(1) control file to build the software and download
 #           it to the microcontroller

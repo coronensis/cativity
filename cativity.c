@@ -1,11 +1,5 @@
 /*
- * CI-V protocol based VFO controller for Xiegu G90 using an ATmega328p
- *
- * Features:
- *  - CI-V GetFrequency for synchronization with the radio
- *  - CI-V SetFrequency on potentiometer changes to tune 10 KHz, 1 KHz, 100 Hz and 10 Hz ranges
- *
- * cativity.c: Implementation
+ * CatIVity - CAT protocol (Icom CI-V) based VFO tuner
  *
  * Copyright (c) 2025 Helmut Sipos, YO6ASM <yo6asm@gmail.com>
  * All rights reserved.
@@ -36,15 +30,35 @@
 #include <util/delay.h>
 #include <stdint.h>
 
-#define UART_BAUDRATE 19200
+// Xiegu G90's CI-V protocol baudrate
+#define UART_BAUDRATE                19200
 
-#define ADC_CHANNEL_2 0x02
-#define ADC_CHANNEL_3 0x03
+#define ADC_CHANNEL_POT_LEFT         0
+#define ADC_CHANNEL_POT_RIGHT        1
 
-#define LED_RED       PD2
+#define LED_RED                      PD2
+#define LED_OFF                      0
+#define LED_ON                       1
 
-#define LED_OFF       0
-#define LED_ON        1
+#define CIV_PREAMBLE                 0xFE
+
+// Xiegu G90 default address (also responds to 0x88 etc.)
+#define CIV_TRANSCEIVER_ADDRESS      0x70
+#define CIV_CONTROLLER_ADDRESS       0xE0
+#define CIV_END_OF_MESSAGE           0xFD
+
+#define CIV_GET_ACTIVE_VFO_FREQUENCY 0x03
+#define CIV_SET_ACTIVE_VFO_FREQUENCY 0x05
+
+// See CI-V protocol specification for message details
+const uint8_t cmdGetActiveVFOFrequency[] = {
+    CIV_PREAMBLE,
+    CIV_PREAMBLE,
+    CIV_TRANSCEIVER_ADDRESS,
+    CIV_CONTROLLER_ADDRESS,
+    CIV_GET_ACTIVE_VFO_FREQUENCY,
+    CIV_END_OF_MESSAGE
+};
 
 // RX buffer
 volatile uint8_t uart_rx_buffer[64];
@@ -56,7 +70,6 @@ volatile uint8_t right_pot_value = 0x00;
 
 // Digitized voltage set by the voltage divider right potentiometer
 volatile uint8_t left_pot_value = 0x00;
-
 
 // UART service routine
 ISR(USART_RX_vect)
@@ -83,21 +96,22 @@ ISR(ADC_vect)
         adc_val = 100;
     }
 
-    // Alternatively read the value set by pot 1 and 2
-    if (ADMUX & 1) {
-        right_pot_value = (right_pot_value + adc_val)/2;
-        ADMUX = 0x40;
+    // Alternatively read the value set by pot right and left
+    if (ADMUX & ADC_CHANNEL_POT_RIGHT) {
+        right_pot_value = (right_pot_value + adc_val) / 2;
+        ADMUX = 0x40 | ADC_CHANNEL_POT_LEFT;
     }
     else {
-        left_pot_value = (left_pot_value + adc_val)/2;
-        ADMUX = 0x41;
+        left_pot_value = (left_pot_value + adc_val) / 2;
+        ADMUX = 0x40 | ADC_CHANNEL_POT_RIGHT;
     }
 }
 
-// TIMER 1 service routine - this drives the reading of ADC
+// TIMER 1 service routine
 ISR(TIMER1_OVF_vect)
 {
     // Another interrupt will occur after ~50ms due to timer overflow
+    // TIMER1 overflow triggers the ADC
     TCNT1L = 0xB0;
     TCNT1H = 0x3C;
 }
@@ -113,13 +127,13 @@ void led_red(uint8_t state)
     }
 }
 
-// Send a byte through the UART
+// Send an array of bytes through the UART
 void uart_send(const uint8_t *data, uint8_t length)
 {
     for (int i = 0; i < length; ++i) {
         // Wait for empty transmit buffer
-        while (bit_is_clear(UCSR0A, UDRE0))
-            ;
+        while (bit_is_clear(UCSR0A, UDRE0)) {
+        }
 
         // Put tx data into the buffer. It will then be send by the hardware
         UDR0 = data[i];
@@ -138,9 +152,16 @@ int main(void)
 
     uint8_t timeout_counter = 0x00;
 
-    // Set CI-V specification for message details
-    const uint8_t cmdGetActiveVFOFrequency[] = {0xFE, 0xFE, 0x70, 0xE0, 0x03, 0xFD};
-    uint8_t cmdSetActiveVFOFrequency[] = {0xFE, 0xFE, 0x70, 0xE0, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFD};
+    // See CI-V protocol specification for message details
+    uint8_t cmdSetActiveVFOFrequency[] = {
+        CIV_PREAMBLE,
+        CIV_PREAMBLE,
+        CIV_TRANSCEIVER_ADDRESS,
+        CIV_CONTROLLER_ADDRESS,
+        CIV_SET_ACTIVE_VFO_FREQUENCY,
+        0x00, 0x00, 0x00, 0x00, 0x00, // Frequency -> BCD coded
+        CIV_END_OF_MESSAGE
+    };
 
     // Disable interrupts while setting things up
     cli();
@@ -191,13 +212,13 @@ int main(void)
     // Disable ditital input for the analog input channels
     DIDR0 |= (1 << ADC1D) | (1 << ADC0D);
 
-    // Enable interrupts while setting things up
+    // Enable interrupts
     sei();
 
     // Forever
     for (;;) {
 
-        // Turn the red LED on for 300 ms
+        // Turn the red LED off and delay 300 ms
         led_red(LED_OFF);
         _delay_ms(300);
 
@@ -233,12 +254,12 @@ int main(void)
         }
 
         // Check message for plausibility
-        if (    (uart_rx_buffer[6] == 0xFE)
-             && (uart_rx_buffer[7] == 0xFE)
-             && (uart_rx_buffer[8] == 0xE0)
-             && (uart_rx_buffer[9] == 0x70)
-             && (uart_rx_buffer[10] == 0x03)
-             && (uart_rx_buffer[16] == 0xFD)
+        if (    (uart_rx_buffer[6] == CIV_PREAMBLE)
+             && (uart_rx_buffer[7] == CIV_PREAMBLE)
+             && (uart_rx_buffer[8] == CIV_CONTROLLER_ADDRESS)
+             && (uart_rx_buffer[9] == CIV_TRANSCEIVER_ADDRESS)
+             && (uart_rx_buffer[10] == CIV_GET_ACTIVE_VFO_FREQUENCY)
+             && (uart_rx_buffer[16] == CIV_END_OF_MESSAGE)
             ) {
             tenKHzHundredKHz = uart_rx_buffer[13];
             oneMHzTenMHz = uart_rx_buffer[14];
@@ -253,11 +274,13 @@ int main(void)
         // Flash the red led
         led_red(LED_ON);
 
+        // Translate the potentiometer positions into frequency values
         oneHzTenHz = ((right_pot_value % 10) << 4) & 0xF0;
         hundredHzOneKHz = (((left_pot_value % 10) << 4) | ((right_pot_value / 10) & 0x0F));
         tenKHzHundredKHz &= 0xF0;
         tenKHzHundredKHz |= ((left_pot_value / 10) & 0x0F);
 
+        // Put the values into the set frequency message array
         cmdSetActiveVFOFrequency[5] = oneHzTenHz;
         cmdSetActiveVFOFrequency[6] = hundredHzOneKHz;
         cmdSetActiveVFOFrequency[7] = tenKHzHundredKHz;
