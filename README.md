@@ -1,2 +1,2 @@
 # cativity
-CatIVity - CI-V (CAT protocol) based VFO tuner for Xiegu G90 transceivers
+CatIVity - CAT protocol (Icom CI-V) based VFO tuner
