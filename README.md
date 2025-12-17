@@ -83,10 +83,13 @@ that supports the CI-V protocol.
 1 x red LED
 2 x 10K potentiometer
 1 x 100n capacitor
-2 x 10K ohm resistor
+2 x 10K resistor
+1 x 200ohm resistor
+1 x Stereo audio jack
+2 x Stereo audio plug (to make the cable to connect to the G90)
 
-2 x Platic knobs (recycled original G90 knobs)
-1 x Platic housing (an ex bicycle tire repair kit)
+2 x Platic knob (recycled original G90 knobs)
+1 x Platic housing (in this example: an old bicycle tire repair kit)
 ```
 
 ## Software
