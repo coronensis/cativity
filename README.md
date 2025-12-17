@@ -57,11 +57,13 @@ and send it to the radio then wait for the response of the radio. Then "rinse an
 Lets say the current frequency set on the radio was "14.198.760" and we read the ADC values 23 for
 the Left pot and 45 for the right pot.
 
+```
  14.198.760 <- Currently frequency on the radio
      || ||
      23 45  <- Left and Right pot values read form ADC
      || ||
  14.123.450 <-  Final frequency that will be requested via "SetActiveVFOFrequency"
+```
 
 The implementation was done on a spare ATmega328P which has a hardware UART and ADC on it.
 It is less than 300 lines of code (including comments and blanks).
@@ -74,8 +76,9 @@ that supports the CI-V protocol.
 
 ## Hardware
 
-![CatIVity Schematic](schematic.svg)
+![CatIVity Schematic](schematic.png)
 
+```
 1 x Atmel (Microchip) ATmega328P microcontroller - PDIP package
 1 x red LED
 2 x 10K potentiometer
@@ -84,6 +87,7 @@ that supports the CI-V protocol.
 
 2 x Platic knobs (recycled original G90 knobs)
 1 x Platic housing (an ex bicycle tire repair kit)
+```
 
 ## Software
 
@@ -91,16 +95,11 @@ that supports the CI-V protocol.
 
 ## Pictures
 
-![CatIVity Schematic](schematic.svg)
 ![Top](closed_top.jpeg)
-![Back]()
-![Bottom]()
-![Open]()
-![Size]()
-
-## Video
-
-![In action](cativity.mp4)
+![Back](closed_back.jpeg)
+![Bottom](closed_bottom.jpeg)
+![Open](open_top.jpeg)
+![Size](scale_comparison.jpeg)
 
 ## Development environment
 
