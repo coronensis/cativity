@@ -91,7 +91,7 @@ that supports the CI-V protocol.
 
 ## Hardware
 
-![CatIVity Schematic](schematic.png)
+![CatIVity Schematic](pics/schematic.png)
 
 ```
 1 x Atmel (Microchip) ATmega328P microcontroller - PDIP package
@@ -109,7 +109,7 @@ that supports the CI-V protocol.
 
 ## Software
 
-![CatIVity Flowchart](flowchart.png)
+![CatIVity Flowchart](pics/flowchart.png)
 
 ## TODO
 
@@ -123,11 +123,11 @@ Larger housing to accommodate the additional space needed by the above additions
 
 ## Pictures
 
-![Top](closed_top.jpeg)
-![Back](closed_back.jpeg)
-![Bottom](closed_bottom.jpeg)
-![Open](open_top.jpeg)
-![Size](scale_comparison.jpeg)
+![Top](pics/closed_top.jpeg)
+![Back](pics/closed_back.jpeg)
+![Bottom](pics/closed_bottom.jpeg)
+![Open](pics/open_top.jpeg)
+![Size](pics/scale_comparison.jpeg)
 
 ## Development environment
 
