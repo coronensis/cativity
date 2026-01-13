@@ -89,7 +89,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("Xiegu G90 CAT/C-IV protocol simulator\n");
+    printf("Xiegu G90 CAT/CI-V protocol simulator\n");
 
     for (;;) {
 

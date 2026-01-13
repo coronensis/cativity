@@ -60,8 +60,8 @@ cativity.hex: $(CSRC)
 	avr-nm -n cativity.elf > cativity.sym
 	avr-size -A --mcu=atmega328p cativity.elf
 
-# Compile a simple C-IV protocol simulator used for testing
-# It simulates the Xiegu G90 CAT/C-IV behavior
+# Compile a simple CI-V protocol simulator used for testing
+# It simulates the Xiegu G90 CAT/CI-V behavior
 g90sim: g90sim.c
 	gcc g90sim.c -o g90sim
 
