@@ -1,7 +1,7 @@
 /*
- * CatIVity - CAT protocol (Icom CI-V) based VFO tuner
+ * CatIVity - CAT protocol (Icom CI-V) based remote VFO tuner
  *
- * Copyright (c) 2025 Helmut Sipos, YO6ASM <yo6asm@gmail.com>
+ * Copyright (c) 2026 Helmut Sipos, YO6ASM <yo6asm@gmail.com>
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -30,100 +30,181 @@
 #include <util/delay.h>
 #include <stdint.h>
 
-// Xiegu G90's CI-V protocol baudrate
-#define UART_BAUDRATE                19200
-
-#define ADC_CHANNEL_POT_LEFT         0
-#define ADC_CHANNEL_POT_RIGHT        1
-
-#define LED_RED                      PD2
+// States of the indicator LED
 #define LED_OFF                      0
 #define LED_ON                       1
 
-#define CIV_PREAMBLE                 0xFE
+// UART default baudate
+#define UART_BAUDRATE                19200
 
-// Xiegu G90 default address (also responds to 0x88 etc.)
+// CI-V protocol elements
+#define CIV_PREAMBLE                 0xFE
 #define CIV_TRANSCEIVER_ADDRESS      0x70
 #define CIV_CONTROLLER_ADDRESS       0xE0
 #define CIV_END_OF_MESSAGE           0xFD
-
 #define CIV_GET_ACTIVE_VFO_FREQUENCY 0x03
 #define CIV_SET_ACTIVE_VFO_FREQUENCY 0x05
 
-// See CI-V protocol specification for message details
-const uint8_t cmdGetActiveVFOFrequency[] = {
-    CIV_PREAMBLE,
-    CIV_PREAMBLE,
-    CIV_TRANSCEIVER_ADDRESS,
-    CIV_CONTROLLER_ADDRESS,
-    CIV_GET_ACTIVE_VFO_FREQUENCY,
-    CIV_END_OF_MESSAGE
-};
+// Supported VFO frequency range 0.5 - 30.0 MHz
+#define VFO_FRQUENCY_MIN             500000
+#define VFO_FRQUENCY_MAX             30000000
+
+// Keep track of the rotary encoders rotation direction
+#define ENCODER_DIRECTION_NONE       0
+#define ENCODER_DIRECTION_LEFT       1
+#define ENCODER_DIRECTION_RIGHT      2
 
 // RX buffer
-volatile uint8_t uart_rx_buffer[64];
+volatile uint8_t gUartRXBuffer[64];
 // Counter indicating how many bytes are in the RX buffer
-volatile uint8_t uart_rx_bytes = 0x00;
+volatile uint8_t gUartRXBytes = 0;
 
-// Digitized voltage set by the voltage divider right potentiometer
-volatile uint8_t right_pot_value = 0x00;
+// The VFO frequency
+volatile uint32_t gVFOFrequency = 0;
+// Frequency increment/decrement step
+volatile uint8_t gVFOFrequencyStep = 0;
+// VFO synchronized with tranceiver indicator flag
+volatile uint8_t gVFOFrequencyValid = 0;
 
-// Digitized voltage set by the voltage divider right potentiometer
-volatile uint8_t left_pot_value = 0x00;
+// Rotation direction of the rotary encoder
+volatile uint8_t gEncoderDirection = ENCODER_DIRECTION_NONE;
+// Number of pulses per time unit (200ms) received from the rotary encoder
+volatile uint16_t gEncoderPulses = 0;
 
-// UART service routine
+// External INT0 interrupt service routine
+ISR(INT0_vect)
+{
+    // Rotation LEFT?
+    if (bit_is_set(PIND, PIND3)) {
+        // Direction change - reset nr. of pulses
+        if (gEncoderDirection == ENCODER_DIRECTION_RIGHT) {
+            gEncoderPulses = 0;
+        }
+        gEncoderDirection = ENCODER_DIRECTION_LEFT;
+        gEncoderPulses++;
+        gVFOFrequency -= gVFOFrequencyStep;
+    }
+}
+
+// External INT1 interrupt service routine
+ISR(INT1_vect)
+{
+    // Rotation RIGHT?
+    if (bit_is_set(PIND, PIND2)) {
+        // Direction change - reset nr. of pulses
+        if (gEncoderDirection == ENCODER_DIRECTION_LEFT) {
+            gEncoderPulses = 0;
+        }
+        gEncoderDirection = ENCODER_DIRECTION_RIGHT;
+        gEncoderPulses++;
+        gVFOFrequency += gVFOFrequencyStep;
+    }
+}
+
+// Interrupt on change PCINT8..14 service routine
+ISR(PCINT1_vect)
+{
+    if (bit_is_set(PINC, PINC5)) {
+        // Port C pin 5 -> Sync to transceiver
+        // Request reading the current VFO set on the transceiver
+        gVFOFrequencyValid = 0;
+    }
+    else if (bit_is_set(PINC, PINC4)) {
+        // TBD
+    }
+    else if (bit_is_set(PINC, PINC3)) {
+        // TBD
+    }
+    else if (bit_is_set(PINC, PINC2)) {
+        // TBD
+    }
+    else if (bit_is_set(PINC, PINC1)) {
+        // TBD
+    }
+    else if (bit_is_set(PINC, PINC0)) {
+        // TBD
+    }
+}
+
+// UART RX interrupt service routine
 ISR(USART_RX_vect)
 {
     // Copy the received byte inito the buffer if there is space left
     // Increment the counter indicating how many bytes are in the buffer
-    if (uart_rx_bytes < sizeof(uart_rx_buffer)) {
-        uart_rx_buffer[uart_rx_bytes] = UDR0;
-        uart_rx_bytes++;
+    if (gUartRXBytes < sizeof(gUartRXBuffer)) {
+        gUartRXBuffer[gUartRXBytes] = UDR0;
+        gUartRXBytes++;
     }
 }
 
-// ADC service routine
-ISR(ADC_vect)
-{
-    uint8_t adc_l = ADCL;
-    uint8_t adc_h = ADCH;
-    // The ADC conversion is a 10 bit value -> values range from 0...1024
-    // Diving by  10 puts it nicely into our desired range of 0..99
-    uint16_t adc_val = ((adc_h << 8) | adc_l) / 10;
-
-    // Clamp the value to 0..100
-    if (adc_val > 100) {
-        adc_val = 100;
-    }
-
-    // Alternatively read the value set by pot right and left
-    if (ADMUX & ADC_CHANNEL_POT_RIGHT) {
-        right_pot_value = (right_pot_value + adc_val) / 2;
-        ADMUX = 0x40 | ADC_CHANNEL_POT_LEFT;
-    }
-    else {
-        left_pot_value = (left_pot_value + adc_val) / 2;
-        ADMUX = 0x40 | ADC_CHANNEL_POT_RIGHT;
-    }
-}
-
-// TIMER 1 service routine
+// Timer1 overflow interrupt service routine
 ISR(TIMER1_OVF_vect)
 {
-    // Another interrupt will occur after ~50ms due to timer overflow
-    // TIMER1 overflow triggers the ADC
-    TCNT1L = 0xB0;
-    TCNT1H = 0x3C;
+    // Setup for new timer overflow interrupt after 200ms
+    TCNT1H = 0x9E;
+    TCNT1L = 0x58;
+
+    // The encoder generates 600 pulses per rotation at a maximal speed of 100 rotations per minute
+    // We monitor 200 ms time segments, i.e. each is 1/5th of a second.
+    // So 600/5 = 120 pulses. 120 pulses / 200 ms -> rotation speed = 1 rotation / second
+
+    // Evaluate rotation speed according to number of accumulated pulses per time unit
+    // and change frequency adjustment steps accordingly
+
+    // TODO: number of and value of the limits needs to be tested and optimized for smooth operation
+
+    // 0 rotations per second
+    if (gEncoderPulses == 0) {
+        gVFOFrequencyStep = 1;
+        gEncoderDirection = ENCODER_DIRECTION_NONE;
+    }
+    // 1/3 rotation per second
+    else if (gEncoderPulses < 40) {
+        gVFOFrequencyStep = 1; // 600 Hz / rot
+    }
+    // 2/3 rotation per second
+    else if (gEncoderPulses < 80) {
+        gVFOFrequencyStep = 2; // 1200 Hz / rot
+    }
+    // 1 rotation per second
+    else if (gEncoderPulses < 120) {
+        gVFOFrequencyStep = 3; // 1800 Hz / rot
+    }
+    else if (gEncoderPulses < 160) {
+        gVFOFrequencyStep = 4; // 2400 Hz / rot
+    }
+    else if (gEncoderPulses < 200) {
+        gVFOFrequencyStep = 5; // 3000 Hz / rot
+    }
+    // 2 rotations per second
+    else if (gEncoderPulses < 240) {
+        gVFOFrequencyStep = 6; // 3600 Hz / rot
+    }
+    else if (gEncoderPulses < 280) {
+        gVFOFrequencyStep = 7; // 4200 Hz / rot
+    }
+    else if (gEncoderPulses < 320) {
+        gVFOFrequencyStep = 8; // 4800 Hz / rot
+    }
+    // 3 rotations per second
+    else if (gEncoderPulses < 360) {
+        gVFOFrequencyStep = 9; // 5400 Hz / rot
+    }
+    else {
+        gVFOFrequencyStep = 10; // 6000 Hz / rot
+    }
+
+    gEncoderPulses = 0;
 }
 
-// Set red led to ON or OFF
+// Set red LED to ON or OFF
 void led_red(uint8_t state)
 {
     if (state == LED_ON) {
-        PORTD |= _BV(LED_RED);
+        PORTD |= _BV(PORTD4);
     }
     else {
-        PORTD &= ~_BV(LED_RED);
+        PORTD &= ~_BV(PORTD4);
     }
 }
 
@@ -140,17 +221,185 @@ void uart_send(const uint8_t *data, uint8_t length)
     }
 }
 
+// Convert frequency Hz -> 5-byte BCD LSB-first
+void frequency_to_bcd(uint32_t frequency, uint8_t *out)
+{
+    uint8_t decimals[10];
+
+    // Get the decimal for each position
+    for (int i = 0; i < 10; ++i) {
+        decimals[i] = frequency % 10;
+        frequency /= 10;
+    }
+
+    // Pack the decimals into the byte array
+    out[0] = (decimals[1] << 4) | decimals[0];
+    out[1] = (decimals[3] << 4) | decimals[2];
+    out[2] = (decimals[5] << 4) | decimals[4];
+    out[3] = (decimals[7] << 4) | decimals[6];
+    out[4] = (decimals[9] << 4) | decimals[8];
+}
+
+// Convert 5-byte BCD LSB-first -> frequency Hz. Return 0 if invalid (any nibble >9)
+uint32_t bcd_to_frequency(volatile const uint8_t *const data)
+{
+    uint8_t decimals[10];
+
+    // Unpack the decimals from the byte array
+    decimals[0] = data[0] & 0x0F;
+    decimals[1] = (data[0] >> 4) & 0x0F;
+    decimals[2] = data[1] & 0x0F;
+    decimals[3] = (data[1] >> 4) & 0x0F;
+    decimals[4] = data[2] & 0x0F;
+    decimals[5] = (data[2] >> 4) & 0x0F;
+    decimals[6] = data[3] & 0x0F;
+    decimals[7] = (data[3] >> 4) & 0x0F;
+    decimals[8] = data[4] & 0x0F;
+    decimals[9] = (data[4] >> 4) & 0x0F;
+
+    // Check for plausible value
+    for (int i = 0; i < 10; ++i) {
+        if (decimals[i] > 9) {
+            return 0;
+        }
+    }
+
+    uint32_t frequency = 0;
+    uint32_t mul = 1;
+
+    // Assemble the frequency value from the decimals
+    for (int i = 0; i < 10; ++i) {
+        frequency += decimals[i] * mul;
+        mul *= 10;
+    }
+
+    return frequency;
+}
+
+// Retrieve the currently set VFO frequency from the transceiver
+uint32_t get_current_vfo_frequency(void)
+{
+    uint8_t timeout_counter = 0x00;
+    uint32_t frequency = 0x00;
+
+    // See CI-V protocol specification for message details
+    const uint8_t cmdGetActiveVFOFrequency[] = {
+        CIV_PREAMBLE,
+        CIV_PREAMBLE,
+        CIV_TRANSCEIVER_ADDRESS,
+        CIV_CONTROLLER_ADDRESS,
+        CIV_GET_ACTIVE_VFO_FREQUENCY,
+        CIV_END_OF_MESSAGE
+    };
+
+    // Request the current frequency from the transceiver
+    uart_send(cmdGetActiveVFOFrequency, sizeof(cmdGetActiveVFOFrequency) / sizeof(cmdGetActiveVFOFrequency[0]));
+
+    // Xiegu G90 is echoing back the received command and THEN sending the response
+    // therefore we need to wait for both messages.
+    gUartRXBytes = 0;
+    timeout_counter = 50;
+    while ((gUartRXBytes < 17) && --timeout_counter) {
+        _delay_ms(1);
+    }
+
+    if (timeout_counter == 0) {
+        // RX Timeout
+        led_red(LED_ON);
+        _delay_ms(1000);
+        led_red(LED_OFF);
+        _delay_ms(1000);
+    }
+    else {
+        // Check message for plausibility
+        if (       (gUartRXBuffer[6] == CIV_PREAMBLE)
+                && (gUartRXBuffer[7] == CIV_PREAMBLE)
+                && (gUartRXBuffer[8] == CIV_CONTROLLER_ADDRESS)
+                && (gUartRXBuffer[9] == CIV_TRANSCEIVER_ADDRESS)
+                && (gUartRXBuffer[10] == CIV_GET_ACTIVE_VFO_FREQUENCY)
+                && (gUartRXBuffer[16] == CIV_END_OF_MESSAGE)
+           ) {
+            // decode the frequency from the received response
+            frequency = bcd_to_frequency(&gUartRXBuffer[11]);
+        }
+        else {
+            // Malformed message
+            led_red(LED_ON);
+            _delay_ms(3000);
+            led_red(LED_OFF);
+            _delay_ms(3000);
+        }
+    }
+
+    return frequency;
+}
+
+// Initialize the MCU
+void init_hardware(void)
+{
+    // Disable interrupts while setting things up
+    cli();
+
+    // Initialize Ports
+
+    // Port B all inputs
+    DDRB  = 0b00000000;
+    // Pulls-ups for all inputs
+    PORTB = 0b11111111;
+
+    // Port C all inputs
+    DDRC  = 0b00000000;
+    // Pulls-ups for all inputs
+    PORTC = 0b11111111;
+
+    // Port D - all inputs except UART TX (PD1) and LED (PD4)
+    DDRD  = 0b00010010;
+    // Enable internal pull-ups for all but UART TX and LED
+    PORTD = 0b11101101;
+
+    // Initialize external interrupts
+
+    // External interrupts 0,1: Select falling edge trigger
+    EICRA = 0b00001010;
+    // Enable External Interrupts
+    EIMSK = 0b00000011;
+
+    // Initialize interrupt on change
+
+    // Port C Pin 5 .. 0, PCINT13 .. PCINT8 is used for various user defined pushbuttons
+    // PCIE1: Pin Change Interrupt Enable 1
+    PCICR =  0b00000010;
+    // Enable interrupt on pin change on PINC5..0
+    PCMSK1 = 0b00111111;
+
+    // Initialize UART
+
+    // Set format N81 and baud rate
+    UBRR0 = (uint8_t)((F_CPU / UART_BAUDRATE + 8) / 16 - 1);
+    // Enable receiver and transmitter as well as receive interrupt
+    UCSR0B = (1 << RXEN0) | (1 << TXEN0) | (1 << RXCIE0);
+
+    // Initialize Timer1
+
+    TCCR1A = 0x00;
+    // 1:64 prescaler
+    TCCR1B = 0x03;
+    TCCR1C = 0x00;
+    // Enable overflow interrupt
+    TIMSK1 = 0x01;
+    // Timer overflows after 200ms
+    TCNT1H = 0x9E;
+    TCNT1L = 0x58;
+
+    // Enable interrupts
+    sei();
+}
+
 int main(void)
 {
-    uint8_t oneHzTenHz = 0x00;
-    uint8_t hundredHzOneKHz = 0x00;
-    uint8_t tenKHzHundredKHz = 0x00;
-    uint8_t oneMHzTenMHz = 0x00;
-
-    uint8_t last_right_pot_value = 0x00;
-    uint8_t last_left_pot_value = 0x00;
-
     uint8_t timeout_counter = 0x00;
+
+    uint32_t last_vfo_frequency = 0x00;
 
     // See CI-V protocol specification for message details
     uint8_t cmdSetActiveVFOFrequency[] = {
@@ -163,138 +412,58 @@ int main(void)
         CIV_END_OF_MESSAGE
     };
 
-    // Disable interrupts while setting things up
-    cli();
-
-    // Initialize Ports
-    // Port B all inputs
-    DDRB  = 0x00;
-    // Pulls-ups for inputs
-    PORTB = 0xFF;
-
-    // Port C all inputs C0 and C1 -> ADC
-    DDRC  = 0x00;
-    // Enable pull-ups for uppermost 2 bits
-    PORTC = 0xF0;
-
-    // Port D - all inputs except UART TX and LED (PD1 and PD2)
-    DDRD  = 0x06;
-    // Enable internal pull-ups for all but RX and TX
-    PORTD = 0xF9;
-
-    // Initialize Timer1
-    TCCR1A = 0x00;
-    // 1:8 prescaler
-    TCCR1B = 0x02;
-    TCCR1C = 0x00;
-    // Enable TC1.ovf interrupt
-    TIMSK1 = 0x01;
-    // Interrupt after 50ms due to timer overflow
-    TCNT1L = 0xB0;
-    TCNT1H = 0x3C;
-
-    // Initialize UART set format N81, enable RX, TX and RX interrupt
-    UBRR0 = (uint8_t)((F_CPU / UART_BAUDRATE + 8) / 16 - 1);
-    UCSR0B = (1 << RXEN0) | (1 << TXEN0) | (1 << RXCIE0); // Enable RX, TX, and RX interrupt
-
-    // Initialize ADC
-    // AVCC with external capacitor at AREF pin, align right, chanel 0
-    ADMUX = 0x40;
-
-    // Enable ADC, auto trigger, enable interrupt, prescaler = 64 -> result in 125KHz sampling rate
-    ADCSRA = 0xEE;
-
-    // ADC TIMER1 overflow mode. Free running mode would mean interrupts every 200us
-    ADCSRB = 0x06;
-    // Disable analog comp
-    ACSR   = 0x80;
-
-    // Disable ditital input for the analog input channels
-    DIDR0 |= (1 << ADC1D) | (1 << ADC0D);
-
-    // Enable interrupts
-    sei();
+    // Initialize the microcontroller
+    init_hardware();
 
     // Forever
     for (;;) {
 
-        // Turn the red LED off and delay 300 ms
-        led_red(LED_OFF);
-        _delay_ms(300);
+        // If not done so yet, retrieve the current frequency from the transceiver
+        if (!gVFOFrequencyValid) {
 
-        // Do nothing while the potentiometers have not moved
-        if ((right_pot_value == last_right_pot_value)
-            &&
-            (left_pot_value == last_left_pot_value)
-           ) {
+            if (!((gVFOFrequency = get_current_vfo_frequency()))) {
+                continue;
+            }
+
+            gVFOFrequencyValid = 1;
+        }
+
+        // Clamp the frequency to the supported range
+        if (gVFOFrequency < VFO_FRQUENCY_MIN)
+        {
+            gVFOFrequency = VFO_FRQUENCY_MIN;
+        }
+        else if (gVFOFrequency > VFO_FRQUENCY_MAX)
+        {
+            gVFOFrequency = VFO_FRQUENCY_MAX;
+        }
+
+        // Do nothing while the frequency didn't change
+        if (gVFOFrequency == last_vfo_frequency) {
+            // TODO: enable sleep
             continue;
         }
 
         // Update last values
-        last_right_pot_value = right_pot_value;
-        last_left_pot_value = left_pot_value;
+        last_vfo_frequency = gVFOFrequency;
 
-        // Request the current frequency from the radio
-        uart_rx_bytes = 0;
-        uart_send(cmdGetActiveVFOFrequency, sizeof(cmdGetActiveVFOFrequency));
-
-        // Xiegu G90 is echoing back the received command and THEN sending the response
-        // therefore we need to wait for both messages.
-        timeout_counter = 50;
-        while ((uart_rx_bytes < 17) && --timeout_counter) {
-            _delay_ms(1);
-        }
-
-        // If we run into the timeout (i.e. no response from the tranceiver)
-        // keep the red LED on for another second then try again
-        if (timeout_counter == 0) {
-            led_red(LED_ON);
-            _delay_ms(1000);
-            continue;
-        }
-
-        // Check message for plausibility
-        if (    (uart_rx_buffer[6] == CIV_PREAMBLE)
-             && (uart_rx_buffer[7] == CIV_PREAMBLE)
-             && (uart_rx_buffer[8] == CIV_CONTROLLER_ADDRESS)
-             && (uart_rx_buffer[9] == CIV_TRANSCEIVER_ADDRESS)
-             && (uart_rx_buffer[10] == CIV_GET_ACTIVE_VFO_FREQUENCY)
-             && (uart_rx_buffer[16] == CIV_END_OF_MESSAGE)
-            ) {
-            tenKHzHundredKHz = uart_rx_buffer[13];
-            oneMHzTenMHz = uart_rx_buffer[14];
-        }
-        else {
-            // Malformed message -> keep the red led on for 3 seconds then try again
-            led_red(LED_ON);
-            _delay_ms(3000);
-            continue;
-        }
-
-        // Flash the red led
+        // Briefly flash the red LED
         led_red(LED_ON);
 
-        // Translate the potentiometer positions into frequency values
-        oneHzTenHz = ((right_pot_value % 10) << 4) & 0xF0;
-        hundredHzOneKHz = (((left_pot_value % 10) << 4) | ((right_pot_value / 10) & 0x0F));
-        tenKHzHundredKHz &= 0xF0;
-        tenKHzHundredKHz |= ((left_pot_value / 10) & 0x0F);
+        // Encode the frequency in BCD as per spec.
+        frequency_to_bcd(gVFOFrequency, &cmdSetActiveVFOFrequency[5]);
 
-        // Put the values into the set frequency message array
-        cmdSetActiveVFOFrequency[5] = oneHzTenHz;
-        cmdSetActiveVFOFrequency[6] = hundredHzOneKHz;
-        cmdSetActiveVFOFrequency[7] = tenKHzHundredKHz;
-        cmdSetActiveVFOFrequency[8] = oneMHzTenMHz;
-
-        // Set the current frequency on the radio
-        uart_rx_bytes = 0;
-        uart_send(cmdSetActiveVFOFrequency, sizeof(cmdSetActiveVFOFrequency));
+        // Set the current frequency on the transceiver
+        uart_send(cmdSetActiveVFOFrequency, sizeof(cmdSetActiveVFOFrequency) / sizeof(cmdSetActiveVFOFrequency[0]));
 
         // Read (and ignore) the response to the set active vfo frequency command
+        gUartRXBytes = 0;
         timeout_counter = 50;
-        while ((uart_rx_bytes < 17) && --timeout_counter) {
+        while ((gUartRXBytes < 17) && --timeout_counter) {
             _delay_ms(1);
         }
+
+        led_red(LED_OFF);
     }
 }
 

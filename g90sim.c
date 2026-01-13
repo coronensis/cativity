@@ -1,5 +1,5 @@
 //
-// Simple Xiegu G90 CI-V testing program
+// Simple Xiegu G90 CAT/CI-V protocol simulator
 //
 
 #include <stdio.h>
@@ -67,10 +67,8 @@ int serial_open(const char *path)
 
 int main(int argc, char **argv)
 {
-    const uint8_t getFreq[] = { 0xFE, 0xFE, 0x70, 0xE0, 0x03, 0xFD};
+    // Hard coded responses
     const uint8_t getFreqResp[] = { 0xFE, 0xFE, 0xE0, 0x70, 0x03, 0x04, 0x32, 0x21, 0x14, 0x00, 0xFD };
-
-    const uint8_t setFreq[] = { 0xFE, 0xFE, 0x70, 0xE0, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFD };
     const uint8_t setFreqResp[] = { 0xFE, 0xFE, 0xE0, 0x70, 0xFB, 0xFD};
 
     int fd = -1;
@@ -91,10 +89,13 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("Xiegu G90 C-IV CAT protocol simulator\n");
+    printf("Xiegu G90 CAT/C-IV protocol simulator\n");
+
     for (;;) {
 
         len = 0;
+
+        // Receive the first new bytes enought to determine what kind of message it is
         for (int i = 0; i < 6; i++) {
             if (read(fd, &buffer[i], 1) < 1) {
                 break;
@@ -102,6 +103,7 @@ int main(int argc, char **argv)
             len++;
         }
 
+        // Validate lenght
         if (len < 6) {
             continue;
         }
@@ -122,13 +124,17 @@ int main(int argc, char **argv)
         // Get the command byte
         uint8_t cmd = buffer[4];
 
-        if ((cmd == 0x03) && (buffer[5] == 0xFD)) {
-            write(fd, getFreq, sizeof(getFreq));
-            write(fd, getFreqResp, sizeof(getFreqResp));
-            continue;
+        // Get ActiveVFO frequency command?
+        if (cmd == 0x03) {
+            // Proper message termination?
+            if (buffer[5] == 0xFD) {
+                // Send the response to the controler
+                write(fd, buffer, len);
+                write(fd, getFreqResp, sizeof(getFreqResp));
+            }
         }
-
-        if (cmd == 0x05) {
+        else if (cmd == 0x05) {
+            // receive the rest of the bytes
             for (int i = 0; i < 5; i++) {
                 if (read(fd, &buffer[6 + i], 1) < 1) {
                     break;
@@ -136,16 +142,17 @@ int main(int argc, char **argv)
                 len++;
             }
 
+            // Validate length
             if (len < 11) {
                 continue;
             }
 
             uint32_t frequency = 0;
 
-            // check message termination
+            // Check message termination
             if (buffer[10] == 0xFD)
             {
-                /* decode BCD to freq */
+                // Decode BCD to freq
                 uint8_t *in = &buffer[5];
                 uint8_t decimals[10];
 
@@ -172,7 +179,7 @@ int main(int argc, char **argv)
             printf("Frequency: %d Hz\r", frequency);
 
             // Send the response to the controler
-            write(fd, setFreq, sizeof(setFreq));
+            write(fd, buffer, sizeof(len));
             write(fd, setFreqResp, sizeof(setFreqResp));
         }
     }

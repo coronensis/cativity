@@ -1,10 +1,10 @@
 #
-# CatIVity - CAT protocol (Icom CI-V) based VFO tuner
+# CatIVity - CAT protocol (Icom CI-V) based remote VFO tuner
 #
 # Makefile: MAKE(1) control file to build the software and download
 #           it to the microcontroller
 #
-# Copyright (c) 2025 Helmut Sipos, YO6ASM <yo6asm@gmail.com>
+# Copyright (c) 2026 Helmut Sipos, YO6ASM <yo6asm@gmail.com>
 # All rights reserved.
 #
 # Redistribution and use in source and binary forms, with or without
@@ -48,7 +48,7 @@ LDFLAGS += -Wl,-Map,cativity.map
 CSRC = cativity.c
 
 # Default target
-all: cativity.hex
+all: cativity.hex g90sim
 
 # Compile the application into the image to be used for flashing.
 cativity.hex: $(CSRC)
@@ -60,9 +60,14 @@ cativity.hex: $(CSRC)
 	avr-nm -n cativity.elf > cativity.sym
 	avr-size -A --mcu=atmega328p cativity.elf
 
+# Compile a simple C-IV protocol simulator used for testing
+# It simulates the Xiegu G90 CAT/C-IV behavior
+g90sim: g90sim.c
+	gcc g90sim.c -o g90sim
+
 # Remove build artefacts
 clean:
-	rm -f *.o *.a *.elf *.hex *.bin *.lst *.sym trace*.txt
+	rm -f *.o *.a *.elf *.hex *.bin *.lst *.sym trace*.txt g90sim
 
 # NOTE: The following pinctrl stuff only applies when running on a Raspberry Pi
 
