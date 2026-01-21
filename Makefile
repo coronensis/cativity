@@ -78,6 +78,20 @@ install: cativity.hex
 	avrdude -V -p m328p -P /dev/spidev0.0:/dev/gpiochip0 -c linuxspi -B 10000 -U flash:w:cativity.hex
 	pinctrl set 21 dh
 
+# Read the eeprom memory of the microcontroller
+rdeeprom:
+	pinctrl set 21 op
+	pinctrl set 21 dl
+	avrdude -V -p m328p -P /dev/spidev0.0:/dev/gpiochip0 -c linuxspi -B 10000 -U eeprom:r:eeprom.bin:r
+	pinctrl set 21 dh
+
+# Write the eeprom memory of the microcontroller
+wreeprom:
+	pinctrl set 21 op
+	pinctrl set 21 dl
+	avrdude -V -p m328p -P /dev/spidev0.0:/dev/gpiochip0 -c linuxspi -B 10000 -U eeprom:w:eeprom.bin:r
+	pinctrl set 21 dh
+
 # Read the fuse bits of the microcontroller
 rdfuse:
 	pinctrl set 21 op

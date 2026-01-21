@@ -13,6 +13,8 @@
 #include <sys/select.h>
 #include <sys/time.h>
 
+uint32_t frequency = 0;
+
 // Set serial port to 19200 8N1 raw
 int serial_open(const char *path)
 {
@@ -147,7 +149,7 @@ int main(int argc, char **argv)
                 continue;
             }
 
-            uint32_t frequency = 0;
+            frequency = 0;
 
             // Check message termination
             if (buffer[10] == 0xFD)
@@ -181,6 +183,23 @@ int main(int argc, char **argv)
             // Send the response to the controler
             write(fd, buffer, sizeof(len));
             write(fd, setFreqResp, sizeof(setFreqResp));
+        }
+        else if (cmd == 0x06) {
+
+            // receive the rest of the bytes
+            for (int i = 0; i < 4; i++) {
+                if (read(fd, &buffer[6 + i], 1) < 1) {
+                    break;
+                }
+                len++;
+            }
+
+            // Validate length
+            if (len < 10) {
+                continue;
+            }
+
+            printf("frequency: %d \t %d \t %d                               \r", frequency, (buffer[5] << 8) | buffer[6], (buffer[7] << 8) | buffer[8]);
         }
     }
     close(fd);

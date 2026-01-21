@@ -54,6 +54,9 @@
 #define ENCODER_DIRECTION_LEFT       1
 #define ENCODER_DIRECTION_RIGHT      2
 
+#define ENCODER_PULSES_PER_ROTATION  600
+#define ENCODER_SAMPLING_PERIOD      200 // ms
+
 // RX buffer
 volatile uint8_t gUartRXBuffer[64];
 // Counter indicating how many bytes are in the RX buffer
@@ -70,6 +73,14 @@ volatile uint8_t gVFOFrequencyValid = 0;
 volatile uint8_t gEncoderDirection = ENCODER_DIRECTION_NONE;
 // Number of pulses per time unit (200ms) received from the rotary encoder
 volatile uint16_t gEncoderPulses = 0;
+
+// VFO frequency tuning increment/decrement steps
+const uint8_t gTuningSteps[] = {1, 1, 2, 3, 4, 5, 8, 16, 64, 255};
+
+#define TUNING_STEPS_IDX_MAX ((sizeof(gTuningSteps)/sizeof(gTuningSteps[0])) - 1)
+
+volatile uint16_t gPulsesRight = 0;
+volatile uint16_t gPulsesLeft = 0;
 
 // External INT0 interrupt service routine
 ISR(INT0_vect)
@@ -144,54 +155,20 @@ ISR(TIMER1_OVF_vect)
     TCNT1H = 0x9E;
     TCNT1L = 0x58;
 
-    // The encoder generates 600 pulses per rotation at a maximal speed of 100 rotations per minute
-    // We monitor 200 ms time segments, i.e. each is 1/5th of a second.
-    // So 600/5 = 120 pulses. 120 pulses / 200 ms -> rotation speed = 1 rotation / second
+    uint32_t idx = gEncoderPulses / 60;
+    if (idx > TUNING_STEPS_IDX_MAX) {
+        idx = TUNING_STEPS_IDX_MAX;
+    }
 
-    // Evaluate rotation speed according to number of accumulated pulses per time unit
-    // and change frequency adjustment steps accordingly
+    gVFOFrequencyStep = gTuningSteps[idx];
 
-    // TODO: number of and value of the limits needs to be tested and optimized for smooth operation
-
-    // 0 rotations per second
-    if (gEncoderPulses == 0) {
-        gVFOFrequencyStep = 1;
-        gEncoderDirection = ENCODER_DIRECTION_NONE;
+    if (gEncoderDirection == ENCODER_DIRECTION_RIGHT) {
+        gPulsesRight = gEncoderPulses;
+        gPulsesLeft = 0;
     }
-    // 1/3 rotation per second
-    else if (gEncoderPulses < 40) {
-        gVFOFrequencyStep = 1; // 600 Hz / rot
-    }
-    // 2/3 rotation per second
-    else if (gEncoderPulses < 80) {
-        gVFOFrequencyStep = 2; // 1200 Hz / rot
-    }
-    // 1 rotation per second
-    else if (gEncoderPulses < 120) {
-        gVFOFrequencyStep = 3; // 1800 Hz / rot
-    }
-    else if (gEncoderPulses < 160) {
-        gVFOFrequencyStep = 4; // 2400 Hz / rot
-    }
-    else if (gEncoderPulses < 200) {
-        gVFOFrequencyStep = 5; // 3000 Hz / rot
-    }
-    // 2 rotations per second
-    else if (gEncoderPulses < 240) {
-        gVFOFrequencyStep = 6; // 3600 Hz / rot
-    }
-    else if (gEncoderPulses < 280) {
-        gVFOFrequencyStep = 7; // 4200 Hz / rot
-    }
-    else if (gEncoderPulses < 320) {
-        gVFOFrequencyStep = 8; // 4800 Hz / rot
-    }
-    // 3 rotations per second
-    else if (gEncoderPulses < 360) {
-        gVFOFrequencyStep = 9; // 5400 Hz / rot
-    }
-    else {
-        gVFOFrequencyStep = 10; // 6000 Hz / rot
+    else if (gEncoderDirection == ENCODER_DIRECTION_LEFT) {
+        gPulsesRight = 0;
+        gPulsesLeft = gEncoderPulses;
     }
 
     gEncoderPulses = 0;
@@ -337,9 +314,6 @@ uint32_t get_current_vfo_frequency(void)
 // Initialize the MCU
 void init_hardware(void)
 {
-    // Disable interrupts while setting things up
-    cli();
-
     // Initialize Ports
 
     // Port B all inputs
@@ -390,9 +364,6 @@ void init_hardware(void)
     // Timer overflows after 200ms
     TCNT1H = 0x9E;
     TCNT1L = 0x58;
-
-    // Enable interrupts
-    sei();
 }
 
 int main(void)
@@ -412,8 +383,27 @@ int main(void)
         CIV_END_OF_MESSAGE
     };
 
+#if 0
+    // Diagnostic data from the tuner
+    uint8_t cmdSendDiagData[] = {
+        CIV_PREAMBLE,
+        CIV_PREAMBLE,
+        CIV_TRANSCEIVER_ADDRESS,
+        CIV_CONTROLLER_ADDRESS,
+        0x06, // SEND_DIAG_DATA {non CIV commands}
+        0x00, 0x00, 0x00, 0x00,
+        CIV_END_OF_MESSAGE
+    };
+#endif
+
+    // Disable interrupts while setting things up
+    cli();
+
     // Initialize the microcontroller
     init_hardware();
+
+    // Enable interrupts
+    sei();
 
     // Forever
     for (;;) {
@@ -440,15 +430,14 @@ int main(void)
 
         // Do nothing while the frequency didn't change
         if (gVFOFrequency == last_vfo_frequency) {
-            // TODO: enable sleep
             continue;
         }
 
         // Update last values
         last_vfo_frequency = gVFOFrequency;
 
-        // Briefly flash the red LED
-        led_red(LED_ON);
+        // Tune in steps of 10 Hz. Ignore the 'ones'
+        gVFOFrequency -= gVFOFrequency % 10;
 
         // Encode the frequency in BCD as per spec.
         frequency_to_bcd(gVFOFrequency, &cmdSetActiveVFOFrequency[5]);
@@ -463,7 +452,15 @@ int main(void)
             _delay_ms(1);
         }
 
-        led_red(LED_OFF);
+#if 0
+        // Send diag data - current rotation speed
+        cmdSendDiagData[5] = (gPulsesRight >> 8) & 0xFF;
+        cmdSendDiagData[6] = gPulsesRight & 0xFF;
+        cmdSendDiagData[7] = (gPulsesLeft >> 8) & 0xFF;
+        cmdSendDiagData[8] = gPulsesLeft & 0xFF;
+
+        uart_send(cmdSendDiagData, sizeof(cmdSendDiagData) / sizeof(cmdSendDiagData[0]));
+#endif
     }
 }
 
