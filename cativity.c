@@ -49,14 +49,6 @@
 #define VFO_FRQUENCY_MIN             500000
 #define VFO_FRQUENCY_MAX             30000000
 
-// Keep track of the rotary encoders rotation direction
-#define ENCODER_DIRECTION_NONE       0
-#define ENCODER_DIRECTION_LEFT       1
-#define ENCODER_DIRECTION_RIGHT      2
-
-#define ENCODER_PULSES_PER_ROTATION  600
-#define ENCODER_SAMPLING_PERIOD      200 // ms
-
 // RX buffer
 volatile uint8_t gUartRXBuffer[64];
 // Counter indicating how many bytes are in the RX buffer
@@ -69,46 +61,30 @@ volatile uint8_t gVFOFrequencyStep = 0;
 // VFO synchronized with tranceiver indicator flag
 volatile uint8_t gVFOFrequencyValid = 0;
 
-// Rotation direction of the rotary encoder
-volatile uint8_t gEncoderDirection = ENCODER_DIRECTION_NONE;
 // Number of pulses per time unit (200ms) received from the rotary encoder
 volatile uint16_t gEncoderPulses = 0;
 
 // VFO frequency tuning increment/decrement steps
 const uint8_t gTuningSteps[] = {1, 1, 2, 3, 4, 5, 8, 16, 64, 255};
-
 #define TUNING_STEPS_IDX_MAX ((sizeof(gTuningSteps)/sizeof(gTuningSteps[0])) - 1)
-
-volatile uint16_t gPulsesRight = 0;
-volatile uint16_t gPulsesLeft = 0;
 
 // External INT0 interrupt service routine
 ISR(INT0_vect)
 {
-    // Rotation LEFT?
+    // Rotation RIGHT?
     if (bit_is_set(PIND, PIND3)) {
-        // Direction change - reset nr. of pulses
-        if (gEncoderDirection == ENCODER_DIRECTION_RIGHT) {
-            gEncoderPulses = 0;
-        }
-        gEncoderDirection = ENCODER_DIRECTION_LEFT;
         gEncoderPulses++;
-        gVFOFrequency -= gVFOFrequencyStep;
+        gVFOFrequency += gVFOFrequencyStep;
     }
 }
 
 // External INT1 interrupt service routine
 ISR(INT1_vect)
 {
-    // Rotation RIGHT?
+    // Rotation LEFT?
     if (bit_is_set(PIND, PIND2)) {
-        // Direction change - reset nr. of pulses
-        if (gEncoderDirection == ENCODER_DIRECTION_LEFT) {
-            gEncoderPulses = 0;
-        }
-        gEncoderDirection = ENCODER_DIRECTION_RIGHT;
         gEncoderPulses++;
-        gVFOFrequency += gVFOFrequencyStep;
+        gVFOFrequency -= gVFOFrequencyStep;
     }
 }
 
@@ -161,15 +137,6 @@ ISR(TIMER1_OVF_vect)
     }
 
     gVFOFrequencyStep = gTuningSteps[idx];
-
-    if (gEncoderDirection == ENCODER_DIRECTION_RIGHT) {
-        gPulsesRight = gEncoderPulses;
-        gPulsesLeft = 0;
-    }
-    else if (gEncoderDirection == ENCODER_DIRECTION_LEFT) {
-        gPulsesRight = 0;
-        gPulsesLeft = gEncoderPulses;
-    }
 
     gEncoderPulses = 0;
 }
@@ -270,11 +237,10 @@ uint32_t get_current_vfo_frequency(void)
     };
 
     // Request the current frequency from the transceiver
-    uart_send(cmdGetActiveVFOFrequency, sizeof(cmdGetActiveVFOFrequency) / sizeof(cmdGetActiveVFOFrequency[0]));
-
     // Xiegu G90 is echoing back the received command and THEN sending the response
     // therefore we need to wait for both messages.
     gUartRXBytes = 0;
+    uart_send(cmdGetActiveVFOFrequency, sizeof(cmdGetActiveVFOFrequency) / sizeof(cmdGetActiveVFOFrequency[0]));
     timeout_counter = 50;
     while ((gUartRXBytes < 17) && --timeout_counter) {
         _delay_ms(1);
@@ -383,19 +349,6 @@ int main(void)
         CIV_END_OF_MESSAGE
     };
 
-#if 0
-    // Diagnostic data from the tuner
-    uint8_t cmdSendDiagData[] = {
-        CIV_PREAMBLE,
-        CIV_PREAMBLE,
-        CIV_TRANSCEIVER_ADDRESS,
-        CIV_CONTROLLER_ADDRESS,
-        0x06, // SEND_DIAG_DATA {non CIV commands}
-        0x00, 0x00, 0x00, 0x00,
-        CIV_END_OF_MESSAGE
-    };
-#endif
-
     // Disable interrupts while setting things up
     cli();
 
@@ -428,6 +381,9 @@ int main(void)
             gVFOFrequency = VFO_FRQUENCY_MAX;
         }
 
+        // Tune in steps of 10 Hz. Ignore the 'ones'
+        gVFOFrequency -= gVFOFrequency % 10;
+
         // Do nothing while the frequency didn't change
         if (gVFOFrequency == last_vfo_frequency) {
             continue;
@@ -436,31 +392,17 @@ int main(void)
         // Update last values
         last_vfo_frequency = gVFOFrequency;
 
-        // Tune in steps of 10 Hz. Ignore the 'ones'
-        gVFOFrequency -= gVFOFrequency % 10;
-
         // Encode the frequency in BCD as per spec.
         frequency_to_bcd(gVFOFrequency, &cmdSetActiveVFOFrequency[5]);
 
-        // Set the current frequency on the transceiver
-        uart_send(cmdSetActiveVFOFrequency, sizeof(cmdSetActiveVFOFrequency) / sizeof(cmdSetActiveVFOFrequency[0]));
-
-        // Read (and ignore) the response to the set active vfo frequency command
+        // Send the current frequency to the transceiver
+        // then read (and ignore) the response
         gUartRXBytes = 0;
+        uart_send(cmdSetActiveVFOFrequency, sizeof(cmdSetActiveVFOFrequency) / sizeof(cmdSetActiveVFOFrequency[0]));
         timeout_counter = 50;
         while ((gUartRXBytes < 17) && --timeout_counter) {
             _delay_ms(1);
         }
-
-#if 0
-        // Send diag data - current rotation speed
-        cmdSendDiagData[5] = (gPulsesRight >> 8) & 0xFF;
-        cmdSendDiagData[6] = gPulsesRight & 0xFF;
-        cmdSendDiagData[7] = (gPulsesLeft >> 8) & 0xFF;
-        cmdSendDiagData[8] = gPulsesLeft & 0xFF;
-
-        uart_send(cmdSendDiagData, sizeof(cmdSendDiagData) / sizeof(cmdSendDiagData[0]));
-#endif
     }
 }
 
