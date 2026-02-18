@@ -38,7 +38,7 @@ CFLAGS += -ffreestanding -Wall -Wextra -Werror -Wundef -Wshadow \
 	  -Wbad-function-cast -Wunreachable-code
 CFLAGS += -gdwarf-2
 CFLAGS += -mmcu=atmega328p
-CFLAGS += -Os -mcall-prologues
+CFLAGS += -O2 -mcall-prologues
 CFLAGS += -DF_CPU=$(F_CPU)
 
 # Linker flags

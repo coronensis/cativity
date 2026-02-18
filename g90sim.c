@@ -75,7 +75,7 @@ int main(int argc, char **argv)
 
     int fd = -1;
     uint8_t buffer[32];
-    ssize_t len = 0;
+    ssize_t length = 0;
     const char *dev = "/dev/ttyS0";
 
     // Disable stdout buffering
@@ -95,18 +95,18 @@ int main(int argc, char **argv)
 
     for (;;) {
 
-        len = 0;
+        length = 0;
 
         // Receive the first new bytes enought to determine what kind of message it is
         for (int i = 0; i < 6; i++) {
             if (read(fd, &buffer[i], 1) < 1) {
                 break;
             }
-            len++;
+            length++;
         }
 
         // Validate lenght
-        if (len < 6) {
+        if (length < 6) {
             continue;
         }
 
@@ -131,7 +131,7 @@ int main(int argc, char **argv)
             // Proper message termination?
             if (buffer[5] == 0xFD) {
                 // Send the response to the controler
-                write(fd, buffer, len);
+                write(fd, buffer, length);
                 write(fd, getFreqResp, sizeof(getFreqResp));
             }
         }
@@ -141,11 +141,11 @@ int main(int argc, char **argv)
                 if (read(fd, &buffer[6 + i], 1) < 1) {
                     break;
                 }
-                len++;
+                length++;
             }
 
             // Validate length
-            if (len < 11) {
+            if (length < 11) {
                 continue;
             }
 
@@ -178,28 +178,11 @@ int main(int argc, char **argv)
             }
 
             // Print the decoded frequency
-            printf("Frequency: %d Hz\r", frequency);
+            printf("Frequency: %d Hz\r", frequency - (frequency % 10));
 
             // Send the response to the controler
-            write(fd, buffer, sizeof(len));
+            write(fd, buffer, length);
             write(fd, setFreqResp, sizeof(setFreqResp));
-        }
-        else if (cmd == 0x06) {
-
-            // receive the rest of the bytes
-            for (int i = 0; i < 4; i++) {
-                if (read(fd, &buffer[6 + i], 1) < 1) {
-                    break;
-                }
-                len++;
-            }
-
-            // Validate length
-            if (len < 10) {
-                continue;
-            }
-
-            printf("frequency: %d \t %d \t %d                               \r", frequency, (buffer[5] << 8) | buffer[6], (buffer[7] << 8) | buffer[8]);
         }
     }
     close(fd);

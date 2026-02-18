@@ -49,6 +49,13 @@
 #define VFO_FRQUENCY_MIN             500000
 #define VFO_FRQUENCY_MAX             30000000
 
+// Pulses per rotation (x 2 as there is one on 'A' AND 'B')
+#define ROTARY_ENCODER_PULSES_PER_ROTATION (600 * 2)
+
+// Number of complete rotations per second. Determines the tuning steps.
+// The faster the knob is spun, the lager the tuning steps.
+volatile uint8_t gRotationsPerSecond = 0;
+
 // RX buffer
 volatile uint8_t gUartRXBuffer[64];
 // Counter indicating how many bytes are in the RX buffer
@@ -61,55 +68,35 @@ volatile uint8_t gVFOFrequencyStep = 0;
 // VFO synchronized with tranceiver indicator flag
 volatile uint8_t gVFOFrequencyValid = 0;
 
-// Number of pulses per time unit (200ms) received from the rotary encoder
+// Number of pulses per time unit (1000ms) received from the rotary encoder
 volatile uint16_t gEncoderPulses = 0;
 
 // VFO frequency tuning increment/decrement steps
-const uint8_t gTuningSteps[] = {1, 1, 2, 3, 4, 5, 8, 16, 64, 255};
+const uint8_t gTuningSteps[] = {1, 2, 3, 4, 5, 10};
 #define TUNING_STEPS_IDX_MAX ((sizeof(gTuningSteps)/sizeof(gTuningSteps[0])) - 1)
 
-// External INT0 interrupt service routine
+// Keeps the time since last sync with the transceiver
+volatile uint8_t gSecondsSinceLastSync = 0;
+
+// External INT0 (PD2, rotary encoder 'A') interrupt service routine
 ISR(INT0_vect)
 {
+    gEncoderPulses++;
+
     // Rotation RIGHT?
     if (bit_is_set(PIND, PIND3)) {
-        gEncoderPulses++;
         gVFOFrequency += gVFOFrequencyStep;
     }
 }
 
-// External INT1 interrupt service routine
+// External INT1 (PD3, rotary encoder 'B') interrupt service routine
 ISR(INT1_vect)
 {
+    gEncoderPulses++;
+
     // Rotation LEFT?
     if (bit_is_set(PIND, PIND2)) {
-        gEncoderPulses++;
         gVFOFrequency -= gVFOFrequencyStep;
-    }
-}
-
-// Interrupt on change PCINT8..14 service routine
-ISR(PCINT1_vect)
-{
-    if (bit_is_set(PINC, PINC5)) {
-        // Port C pin 5 -> Sync to transceiver
-        // Request reading the current VFO set on the transceiver
-        gVFOFrequencyValid = 0;
-    }
-    else if (bit_is_set(PINC, PINC4)) {
-        // TBD
-    }
-    else if (bit_is_set(PINC, PINC3)) {
-        // TBD
-    }
-    else if (bit_is_set(PINC, PINC2)) {
-        // TBD
-    }
-    else if (bit_is_set(PINC, PINC1)) {
-        // TBD
-    }
-    else if (bit_is_set(PINC, PINC0)) {
-        // TBD
     }
 }
 
@@ -127,18 +114,19 @@ ISR(USART_RX_vect)
 // Timer1 overflow interrupt service routine
 ISR(TIMER1_OVF_vect)
 {
-    // Setup for new timer overflow interrupt after 200ms
-    TCNT1H = 0x9E;
-    TCNT1L = 0x58;
+    // Setup for new timer overflow interrupt after 1000ms
+    TCNT1H = 0x85;
+    TCNT1L = 0xEE;
 
-    uint32_t idx = gEncoderPulses / 60;
-    if (idx > TUNING_STEPS_IDX_MAX) {
-        idx = TUNING_STEPS_IDX_MAX;
+    gSecondsSinceLastSync++;
+
+    gRotationsPerSecond = gEncoderPulses / ROTARY_ENCODER_PULSES_PER_ROTATION;
+    gEncoderPulses = 0;
+    if (gRotationsPerSecond > TUNING_STEPS_IDX_MAX) {
+        gRotationsPerSecond = TUNING_STEPS_IDX_MAX;
     }
 
-    gVFOFrequencyStep = gTuningSteps[idx];
-
-    gEncoderPulses = 0;
+    gVFOFrequencyStep = gTuningSteps[gRotationsPerSecond];
 }
 
 // Set red LED to ON or OFF
@@ -304,14 +292,6 @@ void init_hardware(void)
     // Enable External Interrupts
     EIMSK = 0b00000011;
 
-    // Initialize interrupt on change
-
-    // Port C Pin 5 .. 0, PCINT13 .. PCINT8 is used for various user defined pushbuttons
-    // PCIE1: Pin Change Interrupt Enable 1
-    PCICR =  0b00000010;
-    // Enable interrupt on pin change on PINC5..0
-    PCMSK1 = 0b00111111;
-
     // Initialize UART
 
     // Set format N81 and baud rate
@@ -322,14 +302,14 @@ void init_hardware(void)
     // Initialize Timer1
 
     TCCR1A = 0x00;
-    // 1:64 prescaler
-    TCCR1B = 0x03;
+    // 1:256 prescaler
+    TCCR1B = 0x04;
     TCCR1C = 0x00;
     // Enable overflow interrupt
     TIMSK1 = 0x01;
-    // Timer overflows after 200ms
-    TCNT1H = 0x9E;
-    TCNT1L = 0x58;
+    // Timer overflows after 1000ms
+    TCNT1H = 0x85;
+    TCNT1L = 0xEE;
 }
 
 int main(void)
@@ -381,13 +361,18 @@ int main(void)
             gVFOFrequency = VFO_FRQUENCY_MAX;
         }
 
-        // Tune in steps of 10 Hz. Ignore the 'ones'
-        gVFOFrequency -= gVFOFrequency % 10;
-
         // Do nothing while the frequency didn't change
         if (gVFOFrequency == last_vfo_frequency) {
+            // In moments of inactivity sync every 3 seconds with the transceiver
+            // (in case the frequency on it was manually changed)
+            if (gSecondsSinceLastSync >= 3) {
+                gVFOFrequencyValid = 0;
+            }
             continue;
         }
+
+        // Reset - the frequency is set hence sync is done
+        gSecondsSinceLastSync = 0;
 
         // Update last values
         last_vfo_frequency = gVFOFrequency;
